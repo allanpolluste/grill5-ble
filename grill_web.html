@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grill Thermometer</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --ring: rgba(11,11,11,0.10);
+  --good: #0ca30c; --warn: #fab219; --crit: #d03b3b;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --ring: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; }
+.status { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.status.ok .dot { background: var(--good); }
+.status.wait .dot { background: var(--warn); }
+.status.bad .dot { background: var(--crit); }
+.updated { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 14px; }
+.tile .name { display: flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: 13px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.tile .val { font-size: 32px; font-weight: 650; letter-spacing: -0.5px; margin-top: 2px; }
+.tile .val small { font-size: 16px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+.tile .trend { color: var(--muted); font-size: 12px; min-height: 17px; }
+.tile.off { opacity: 0.55; }
+.tiles.stale .tile { opacity: 0.45; }
+.tile.off .val { color: var(--muted); font-weight: 500; font-size: 20px; padding: 8px 0 4px; }
+
+.card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 14px 8px; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.toolbar h2 { font-size: 15px; margin: 0 auto 0 0; font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13px; color: var(--ink-2); background: transparent; border: 0;
+  padding: 5px 10px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--ring); }
+.seg button[aria-pressed="true"] { background: var(--grid); color: var(--ink); font-weight: 600; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: 12px; margin: 2px 0 4px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend .sw { width: 12px; height: 3px; border-radius: 2px; }
+
+.chart { position: relative; }
+svg { display: block; width: 100%; height: 380px; overflow: visible; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.baseline { stroke: var(--axis); stroke-width: 1; }
+.tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.endlabel { font-size: 12px; font-weight: 600; fill: var(--ink); }
+.cross { stroke: var(--axis); stroke-width: 1; }
+.empty { fill: var(--muted); font-size: 14px; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12); min-width: 120px; white-space: nowrap; }
+.tip .t { color: var(--muted); margin-bottom: 4px; }
+.tip .r { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.tip .r b { margin-left: auto; padding-left: 12px; }
+
+details { margin-top: 14px; }
+summary { cursor: pointer; color: var(--ink-2); }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; margin-top: 8px; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { padding: 4px 12px; text-align: right; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--ink-2); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Grill thermometer</h1>
+    <span class="status wait" id="status"><span class="dot"></span><span id="statusText">connecting…</span></span>
+    <span class="updated" id="updated"></span>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="card">
+    <div class="toolbar">
+      <h2>Temperature, °C</h2>
+      <div class="seg" id="range">
+        <button data-min="10">10 min</button>
+        <button data-min="30" aria-pressed="true">30 min</button>
+        <button data-min="60">1 h</button>
+        <button data-min="0">24 h</button>
+      </div>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="chart">
+      <svg id="svg" role="img" aria-label="Probe temperatures over time"></svg>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+  </section>
+
+  <details>
+    <summary>Latest readings as a table</summary>
+    <div class="tablewrap"><table id="table"></table></div>
+  </details>
+</div>
+
+<script>
+const N = 6;
+const GAP = 60;        // seconds without data = break the line
+const NS = 'http://www.w3.org/2000/svg';
+const colorVar = i => `var(--s${i + 1})`;
+let data = [];          // [{t, v:[...]}]
+let rangeMin = 30;
+let lastTs = null;
+
+const $ = id => document.getElementById(id);
+const fmtTime = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const fmtTimeS = t => new Date(t * 1000).toLocaleTimeString();
+const fmtT = v => v == null ? '—' : v.toFixed(1);
+
+function active() {
+  // probes that reported a value within the last 2 min
+  if (!data.length) return [];
+  const last = data[data.length - 1].t;
+  const set = [];
+  for (let i = 0; i < N; i++)
+    if (data.some(d => d.t > last - 120 && d.v[i] != null)) set.push(i);
+  return set;
+}
+
+function trend(i) {
+  // °C/min over the last ~2 min
+  if (data.length < 2) return null;
+  const end = data[data.length - 1];
+  if (end.v[i] == null) return null;
+  let start = null;
+  for (let k = data.length - 1; k >= 0; k--) {
+    if (end.t - data[k].t > 120) break;
+    if (data[k].v[i] != null) start = data[k];
+  }
+  if (!start || end.t - start.t < 30) return null;
+  return (end.v[i] - start.v[i]) / ((end.t - start.t) / 60);
+}
+
+function renderTiles() {
+  const last = data.length ? data[data.length - 1].v : Array(N).fill(null);
+  const act = active();
+  $('tiles').innerHTML = Array.from({ length: N }, (_, i) => {
+    const on = last[i] != null;
+    const tr = trend(i);
+    const trTxt = tr == null ? '' : (Math.abs(tr) < 0.05 ? 'steady' :
+      `${tr > 0 ? '↑' : '↓'} ${Math.abs(tr).toFixed(1)} °C/min`);
+    return `<div class="tile ${on ? '' : 'off'}">
+      <div class="name"><span class="sw" style="background:${colorVar(i)}"></span>Probe ${i + 1}</div>
+      <div class="val">${on ? `${last[i].toFixed(1)}<small>°C</small>` : 'not connected'}</div>
+      <div class="trend">${on ? trTxt : ''}</div></div>`;
+  }).join('');
+  $('legend').innerHTML = act.map(i =>
+    `<span><span class="sw" style="background:${colorVar(i)}"></span>Probe ${i + 1}</span>`).join('');
+}
+
+function renderTable() {
+  const act = active();
+  const rows = data.slice(-30).reverse();
+  $('table').innerHTML = `<tr><th>Time</th>${act.map(i => `<th>Probe ${i + 1}</th>`).join('')}</tr>` +
+    rows.map(d => `<tr><td>${fmtTimeS(d.t)}</td>${act.map(i => `<td>${fmtT(d.v[i])}</td>`).join('')}</tr>`).join('');
+}
+
+function niceStep(span, target) {
+  const raw = span / target, p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (raw <= m * p) return m * p;
+  return 10 * p;
+}
+
+let geom = null;
+function renderChart() {
+  const svg = $('svg');
+  const W = svg.clientWidth, H = svg.clientHeight;
+  const m = { l: 40, r: 74, t: 10, b: 26 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = '';
+  const el = (tag, attrs, parent = svg) => {
+    const e = document.createElementNS(NS, tag);
+    for (const k in attrs) e.setAttribute(k, attrs[k]);
+    parent.appendChild(e); return e;
+  };
+  const act = active();
+  const tEnd = data.length ? data[data.length - 1].t : Date.now() / 1000;
+  const tFirst = data.length ? Math.min(data[0].t, tEnd - 60) : tEnd - 600;
+  const tStart = rangeMin ? Math.max(tEnd - rangeMin * 60, tFirst) : tFirst;
+  const view = data.filter(d => d.t >= tStart);
+  if (!view.length || !act.length) {
+    el('text', { x: W / 2, y: H / 2, 'text-anchor': 'middle', class: 'empty' }).textContent = 'Waiting for readings…';
+    geom = null; return;
+  }
+  let lo = Infinity, hi = -Infinity;
+  for (const d of view) for (const i of act) if (d.v[i] != null) { lo = Math.min(lo, d.v[i]); hi = Math.max(hi, d.v[i]); }
+  const pad = Math.max(2, (hi - lo) * 0.08);
+  lo = Math.floor((lo - pad) / 5) * 5; hi = Math.ceil((hi + pad) / 5) * 5;
+  if (lo > 0 && lo < 20) lo = 0;
+  const x = t => m.l + (t - tStart) / Math.max(1, tEnd - tStart) * (W - m.l - m.r);
+  const y = v => m.t + (1 - (v - lo) / (hi - lo)) * (H - m.t - m.b);
+
+  // grid + y axis
+  const ys = niceStep(hi - lo, 6);
+  for (let v = Math.ceil(lo / ys) * ys; v <= hi + 1e-9; v += ys) {
+    el('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: v === lo ? 'baseline' : 'gridline' });
+    el('text', { x: m.l - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }).textContent = Math.round(v);
+  }
+  el('line', { x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b, class: 'baseline' });
+  // x axis
+  const spanMin = (tEnd - tStart) / 60;
+  const xsMin = [1, 2, 5, 10, 15, 30, 60, 120].find(s => spanMin / s <= Math.max(3, Math.floor((W - 120) / 90))) || 240;
+  const first = Math.ceil(tStart / (xsMin * 60)) * xsMin * 60;
+  for (let t = first; t <= tEnd; t += xsMin * 60)
+    el('text', { x: x(t), y: H - m.b + 17, 'text-anchor': 'middle', class: 'tick' }).textContent = fmtTime(t);
+
+  // lines (null = gap)
+  const ends = [];
+  for (const i of act) {
+    let dstr = '', pen = false, prevT = null;
+    for (const d of view) {
+      const v = d.v[i];
+      if (prevT != null && d.t - prevT > GAP) pen = false;   // thermometer was off in between
+      prevT = d.t;
+      if (v == null) { pen = false; continue; }
+      dstr += `${pen ? 'L' : 'M'}${x(d.t).toFixed(1)},${y(v).toFixed(1)}`; pen = true;
+    }
+    el('path', { d: dstr, class: 'line', stroke: colorVar(i) });
+    const lastV = [...view].reverse().find(d => d.v[i] != null);
+    if (lastV) ends.push({ i, y: y(lastV.v[i]), v: lastV.v[i] });
+  }
+  // end labels (≤4 series), nudge overlapping ones apart
+  if (act.length <= 4) {
+    ends.sort((a, b) => a.y - b.y);
+    for (let k = 1; k < ends.length; k++) if (ends[k].y - ends[k - 1].y < 15) ends[k].y = ends[k - 1].y + 15;
+    for (const e of ends) {
+      el('rect', { x: W - m.r + 8, y: e.y - 4, width: 8, height: 8, rx: 2, fill: colorVar(e.i) });
+      el('text', { x: W - m.r + 20, y: e.y + 4, class: 'endlabel' }).textContent = `S${e.i + 1} ${e.v.toFixed(0)}°`;
+    }
+  }
+  const cross = el('line', { y1: m.t, y2: H - m.b, class: 'cross', visibility: 'hidden' });
+  const dots = act.map(i => el('circle', { r: 4, fill: colorVar(i), stroke: 'var(--surface)', 'stroke-width': 2, visibility: 'hidden' }));
+  geom = { view, act, x, y, m, W, H, cross, dots };
+}
+
+function hover(ev) {
+  if (!geom) return;
+  const { view, act, x, y, m, W, cross, dots } = geom;
+  const r = $('svg').getBoundingClientRect();
+  const px = ev.clientX - r.left;
+  if (px < m.l || px > W - m.r) return unhover();
+  let best = view[0];
+  for (const d of view) if (Math.abs(x(d.t) - px) < Math.abs(x(best.t) - px)) best = d;
+  const cx = x(best.t);
+  cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+  act.forEach((i, k) => {
+    const v = best.v[i];
+    dots[k].setAttribute('visibility', v == null ? 'hidden' : 'visible');
+    if (v != null) { dots[k].setAttribute('cx', cx); dots[k].setAttribute('cy', y(v)); }
+  });
+  const tip = $('tip');
+  const rows = act.map(i => ({ i, v: best.v[i] })).sort((a, b) => (b.v ?? -1e9) - (a.v ?? -1e9));
+  tip.innerHTML = `<div class="t">${fmtTimeS(best.t)}</div>` + rows.map(o =>
+    `<div class="r"><span class="sw" style="background:${colorVar(o.i)}"></span>Probe ${o.i + 1}<b>${fmtT(o.v)} °C</b></div>`).join('');
+  tip.hidden = false;
+  const tw = tip.offsetWidth;
+  tip.style.left = (cx + 14 + tw > r.width ? cx - 14 - tw : cx + 14) + 'px';
+  tip.style.top = '16px';
+}
+function unhover() {
+  $('tip').hidden = true;
+  if (!geom) return;
+  geom.cross.setAttribute('visibility', 'hidden');
+  geom.dots.forEach(d => d.setAttribute('visibility', 'hidden'));
+}
+$('svg').addEventListener('pointermove', hover);
+$('svg').addEventListener('pointerleave', unhover);
+
+function setStatus(s) {
+  const st = $('status');
+  st.className = 'status ' + ({ connected: 'ok', lost: 'bad', error: 'bad' }[s.code] || 'wait');
+  $('statusText').textContent = s.state + (s.device ? ` · ${s.device}` : '');
+  if (s.last) lastTs = s.last;
+}
+function renderAll() { renderTiles(); renderChart(); renderTable(); }
+
+// "x s ago" ticker
+setInterval(() => {
+  if (!lastTs) return;
+  const ago = Math.round(Date.now() / 1000 - lastTs);
+  const txt = ago < 5 ? 'live' : ago < 120 ? `${ago} s ago` :
+    ago < 7200 ? `${Math.round(ago / 60)} min ago` : `${Math.round(ago / 3600)} h ago`;
+  $('updated').textContent = ago < 5 ? txt : `last reading ${txt}`;
+  $('tiles').classList.toggle('stale', ago > GAP);
+}, 1000);
+
+$('range').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  rangeMin = +b.dataset.min;
+  $('range').querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  renderChart();
+});
+addEventListener('resize', renderChart);
+
+let pending = false;
+fetch('/api/history').then(r => r.json()).then(j => {
+  data = j.history.map(([t, v]) => ({ t, v }));
+  setStatus(j.status);
+  renderAll();
+  const es = new EventSource('/api/stream');
+  es.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'status') setStatus(msg);
+    if (msg.type === 'reading') {
+      data.push({ t: msg.t, v: msg.v }); lastTs = msg.t;
+      if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; renderAll(); }); }
+    }
+  };
+  es.onerror = () => setStatus({ code: 'lost', state: 'lost connection to server' });
+});
+</script>
+</body>
+</html>
