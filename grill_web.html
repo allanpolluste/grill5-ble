@@ -21,6 +21,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--page); color: var(--ink);
   font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
 .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
@@ -43,6 +44,38 @@ h1 { font-size: 20px; margin: 0; font-weight: 650; }
 .tile.off { opacity: 0.55; }
 .tiles.stale .tile { opacity: 0.45; }
 .tile.off .val { color: var(--muted); font-weight: 500; font-size: 20px; padding: 8px 0 4px; }
+
+/* alarms */
+.tile { display: flex; flex-direction: column; }
+.tile.alarm { border-color: var(--crit); box-shadow: inset 0 0 0 1px var(--crit); animation: pulse 1.2s ease-in-out infinite; }
+.tile.alarm.muted { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); animation: none; }
+.tiles.stale .tile.alarm { opacity: 1; }
+@keyframes pulse { 50% { background: color-mix(in srgb, var(--crit) 14%, var(--surface)); } }
+@media (prefers-reduced-motion: reduce) { .tile.alarm { animation: none; } }
+.alarmrow { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; margin-top: 4px; }
+.alarmrow .ic { color: var(--crit); }
+.tile.muted .alarmrow .ic { color: var(--warn); }
+.limits { display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 8px;
+  border-top: 1px solid var(--grid); color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.btn { font: inherit; font-size: 12px; color: var(--ink); background: transparent; border: 1px solid var(--ring);
+  border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+.btn:hover { background: var(--grid); }
+.btn.link { border-color: transparent; color: var(--ink-2); padding: 3px 4px; margin-left: auto; text-decoration: underline; }
+.btn.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btn.mute { margin-left: auto; }
+.limform { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; margin-top: 8px;
+  padding-top: 8px; border-top: 1px solid var(--grid); font-size: 12px; color: var(--ink-2); }
+.limform input { font: inherit; font-size: 13px; width: 100%; min-width: 0; padding: 4px 6px; color: var(--ink);
+  background: var(--page); border: 1px solid var(--ring); border-radius: 6px; }
+.limform .acts { grid-column: 1 / -1; display: flex; gap: 6px; flex-wrap: wrap; }
+.limform .err { grid-column: 1 / -1; color: var(--crit); }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; padding: 10px 14px;
+  border-radius: 10px; border: 1px solid var(--crit); background: color-mix(in srgb, var(--crit) 12%, var(--surface)); }
+.banner.muted { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); }
+.banner .msg { font-weight: 600; }
+.banner .sound { color: var(--ink-2); font-size: 12px; }
+.banner .btn { margin-left: auto; }
+.limitline { stroke-width: 1.5; stroke-dasharray: 5 4; opacity: 0.8; }
 
 .card { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 14px 14px 8px; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
@@ -89,6 +122,7 @@ th { color: var(--ink-2); font-weight: 600; }
     <span class="updated" id="updated"></span>
   </header>
 
+  <div class="banner" id="banner" role="alert" hidden></div>
   <section class="tiles" id="tiles"></section>
 
   <section class="card">
@@ -122,6 +156,7 @@ const colorVar = i => `var(--s${i + 1})`;
 let data = [];          // [{t, v:[...]}]
 let rangeMin = 30;
 let lastTs = null;
+let alarms = Array.from({ length: N }, () => ({ min: null, max: null, state: 'ok', muted: false }));
 
 const $ = id => document.getElementById(id);
 const fmtTime = t => new Date(t * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -152,21 +187,144 @@ function trend(i) {
   return (end.v[i] - start.v[i]) / ((end.t - start.t) / 60);
 }
 
+const fmtLim = v => v == null ? '–' : (Math.round(v * 10) / 10) + '';
+const tileEls = [];
+
+function buildTiles() {
+  // built once; renderTiles() only updates text so an open limits form survives new readings
+  const root = $('tiles');
+  for (let i = 0; i < N; i++) {
+    const t = document.createElement('div');
+    t.className = 'tile';
+    t.innerHTML = `
+      <div class="name"><span class="sw" style="background:${colorVar(i)}"></span>Probe ${i + 1}</div>
+      <div class="val"></div>
+      <div class="trend"></div>
+      <div class="alarmrow" hidden><span class="ic"></span><span class="atxt"></span>
+        <button class="btn mute" type="button">Mute</button></div>
+      <div class="limits"><span class="ltxt"></span><button class="btn link edit" type="button">Set limits</button></div>
+      <form class="limform" hidden>
+        <label for="min${i}">Min °C</label><input id="min${i}" name="min" type="number" step="0.1" inputmode="decimal" placeholder="none">
+        <label for="max${i}">Max °C</label><input id="max${i}" name="max" type="number" step="0.1" inputmode="decimal" placeholder="none">
+        <div class="err" hidden></div>
+        <div class="acts"><button class="btn primary" type="submit">Save</button>
+          <button class="btn clear" type="button">Clear</button><button class="btn cancel" type="button">Cancel</button></div>
+      </form>`;
+    const q = sel => t.querySelector(sel);
+    const form = q('form');
+    q('.edit').onclick = () => {
+      form.min.value = alarms[i].min ?? ''; form.max.value = alarms[i].max ?? '';
+      q('.err').hidden = true; form.hidden = false; q('.limits').hidden = true; form.min.focus();
+    };
+    const close = () => { form.hidden = true; q('.limits').hidden = false; };
+    q('.cancel').onclick = close;
+    q('.clear').onclick = () => saveLimits(i, null, null, q('.err'), close);
+    form.onsubmit = e => { e.preventDefault(); saveLimits(i, form.min.value, form.max.value, q('.err'), close); };
+    q('.mute').onclick = () => post('/api/mute', { probe: i + 1 });
+    root.appendChild(t);
+    tileEls.push({ t, q });
+  }
+}
+
 function renderTiles() {
   const last = data.length ? data[data.length - 1].v : Array(N).fill(null);
-  const act = active();
-  $('tiles').innerHTML = Array.from({ length: N }, (_, i) => {
-    const on = last[i] != null;
+  tileEls.forEach(({ t, q }, i) => {
+    const on = last[i] != null, a = alarms[i], al = a.state !== 'ok';
     const tr = trend(i);
-    const trTxt = tr == null ? '' : (Math.abs(tr) < 0.05 ? 'steady' :
-      `${tr > 0 ? '↑' : '↓'} ${Math.abs(tr).toFixed(1)} °C/min`);
-    return `<div class="tile ${on ? '' : 'off'}">
-      <div class="name"><span class="sw" style="background:${colorVar(i)}"></span>Probe ${i + 1}</div>
-      <div class="val">${on ? `${last[i].toFixed(1)}<small>°C</small>` : 'not connected'}</div>
-      <div class="trend">${on ? trTxt : ''}</div></div>`;
-  }).join('');
+    t.classList.toggle('off', !on && !al);
+    t.classList.toggle('alarm', al);
+    t.classList.toggle('muted', al && a.muted);
+    q('.val').innerHTML = on ? `${last[i].toFixed(1)}<small>°C</small>` : 'not connected';
+    q('.trend').textContent = !on || tr == null ? '' : Math.abs(tr) < 0.05 ? 'steady' :
+      `${tr > 0 ? '↑' : '↓'} ${Math.abs(tr).toFixed(1)} °C/min`;
+    q('.alarmrow').hidden = !al;
+    if (al) {
+      q('.ic').textContent = a.state === 'high' ? '▲' : '▼';
+      q('.atxt').textContent = a.muted ? 'Muted until back in range'
+        : a.state === 'high' ? `Above max ${fmtLim(a.max)} °C` : `Below min ${fmtLim(a.min)} °C`;
+      q('.mute').hidden = a.muted;
+    }
+    const has = a.min != null || a.max != null;
+    q('.ltxt').textContent = a.min != null && a.max != null ? `Range ${fmtLim(a.min)}–${fmtLim(a.max)} °C`
+      : a.max != null ? `Max ${fmtLim(a.max)} °C` : a.min != null ? `Min ${fmtLim(a.min)} °C` : 'No limits';
+    q('.edit').textContent = has ? 'Edit' : 'Set limits';
+  });
+  const act = active();
   $('legend').innerHTML = act.map(i =>
     `<span><span class="sw" style="background:${colorVar(i)}"></span>Probe ${i + 1}</span>`).join('');
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(await r.text());
+  setAlarms((await r.json()).alarms);
+}
+
+function saveLimits(i, min, max, errEl, done) {
+  const num = v => v === null || v === '' ? null : Number(v);
+  const lo = num(min), hi = num(max);
+  const fail = m => { errEl.textContent = m; errEl.hidden = false; };
+  if ([lo, hi].some(v => v !== null && !Number.isFinite(v))) return fail('Enter a number or leave empty.');
+  if (lo !== null && hi !== null && lo >= hi) return fail('Min must be below max.');
+  post('/api/limits', { probe: i + 1, min: lo, max: hi }).then(done, e => fail(e.message));
+}
+
+// ---- alarm banner, sound, title ----
+let audio = null;
+function unlockAudio() {
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === 'suspended') audio.resume().then(renderBanner);
+  } catch (e) { /* no audio support */ }
+}
+addEventListener('pointerdown', unlockAudio);
+addEventListener('keydown', unlockAudio);
+
+function beep() {
+  if (!audio || audio.state !== 'running') return;
+  const t0 = audio.currentTime;
+  for (const [dt, f] of [[0, 880], [0.22, 660]]) {
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = f; o.type = 'square';
+    g.gain.setValueAtTime(0.0001, t0 + dt);
+    g.gain.exponentialRampToValueAtTime(0.15, t0 + dt + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.18);
+    o.connect(g).connect(audio.destination); o.start(t0 + dt); o.stop(t0 + dt + 0.2);
+  }
+}
+
+const loud = () => alarms.map((a, i) => ({ a, i })).filter(o => o.a.state !== 'ok' && !o.a.muted);
+function renderBanner() {
+  const b = $('banner');
+  const all = alarms.map((a, i) => ({ a, i })).filter(o => o.a.state !== 'ok');
+  const ring = loud();
+  if (!all.length) { b.hidden = true; return; }
+  const last = data.length ? data[data.length - 1].v : [];
+  const desc = o => `Probe ${o.i + 1} ${o.a.state === 'high' ? 'above max' : 'below min'}` +
+    (last[o.i] != null ? ` (${last[o.i].toFixed(1)} °C)` : '');
+  b.hidden = false;
+  b.classList.toggle('muted', !ring.length);
+  const needSound = ring.length && (!audio || audio.state !== 'running');
+  b.innerHTML = ring.length
+    ? `<span class="msg">⚠ ${ring.map(desc).join(', ')}</span>` +
+      (needSound ? `<span class="sound">Tap anywhere to enable the alarm sound</span>` : '') +
+      `<button class="btn" type="button" id="muteAll">${ring.length > 1 ? 'Mute all' : 'Mute'}</button>`
+    : `<span class="msg">${all.length} muted alarm${all.length > 1 ? 's' : ''}</span>` +
+      `<span class="sound">They sound again after the probe returns to its range and leaves it again.</span>`;
+  const m = $('muteAll'); if (m) m.onclick = () => post('/api/mute', { all: true });
+}
+
+let flip = false;
+setInterval(() => {
+  const ring = loud().length > 0;
+  if (ring) { beep(); if (navigator.vibrate) navigator.vibrate([200, 100, 200]); }
+  flip = ring && !flip;
+  document.title = flip ? '⚠ ALARM – Grill Thermometer' : 'Grill Thermometer';
+}, 1500);
+
+function setAlarms(list) {
+  if (list) alarms = list;
+  renderTiles(); renderBanner(); renderChart();
 }
 
 function renderTable() {
@@ -205,6 +363,7 @@ function renderChart() {
   }
   let lo = Infinity, hi = -Infinity;
   for (const d of view) for (const i of act) if (d.v[i] != null) { lo = Math.min(lo, d.v[i]); hi = Math.max(hi, d.v[i]); }
+  for (const i of act) for (const v of [alarms[i].min, alarms[i].max]) if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
   const pad = Math.max(2, (hi - lo) * 0.08);
   lo = Math.floor((lo - pad) / 5) * 5; hi = Math.ceil((hi + pad) / 5) * 5;
   if (lo > 0 && lo < 20) lo = 0;
@@ -224,6 +383,10 @@ function renderChart() {
   const first = Math.ceil(tStart / (xsMin * 60)) * xsMin * 60;
   for (let t = first; t <= tEnd; t += xsMin * 60)
     el('text', { x: x(t), y: H - m.b + 17, 'text-anchor': 'middle', class: 'tick' }).textContent = fmtTime(t);
+
+  // alarm limits: dashed line in the probe's colour
+  for (const i of act) for (const v of [alarms[i].min, alarms[i].max]) if (v != null)
+    el('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'limitline', stroke: colorVar(i) });
 
   // lines (null = gap)
   const ends = [];
@@ -293,7 +456,7 @@ function setStatus(s) {
   $('statusText').textContent = s.state + (s.device ? ` · ${s.device}` : '');
   if (s.last) lastTs = s.last;
 }
-function renderAll() { renderTiles(); renderChart(); renderTable(); }
+function renderAll() { renderTiles(); renderChart(); renderTable(); renderBanner(); }
 
 // "x s ago" ticker
 setInterval(() => {
@@ -313,15 +476,18 @@ $('range').addEventListener('click', e => {
 });
 addEventListener('resize', renderChart);
 
+buildTiles();
 let pending = false;
 fetch('/api/history').then(r => r.json()).then(j => {
   data = j.history.map(([t, v]) => ({ t, v }));
+  if (j.alarms) alarms = j.alarms;
   setStatus(j.status);
   renderAll();
   const es = new EventSource('/api/stream');
   es.onmessage = ev => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'status') setStatus(msg);
+    if (msg.type === 'alarms') setAlarms(msg.alarms);
     if (msg.type === 'reading') {
       data.push({ t: msg.t, v: msg.v }); lastTs = msg.t;
       if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; renderAll(); }); }

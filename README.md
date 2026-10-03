@@ -64,6 +64,24 @@ The web page shows:
 Hover over the chart (or touch it on a phone) to see every probe's value at that moment.
 When the thermometer is off, the tiles fade and the page shows how long ago the last reading arrived.
 
+### Alarms (min / max per probe)
+
+Each probe tile has a **Set limits** button. Enter a min, a max or both, in °C. Leaving a field empty means that side has no limit.
+
+- When a reading **leaves the range**, the alarm goes off:
+  - the tile turns red and pulses;
+  - a banner appears at the top;
+  - the browser beeps (phones also vibrate);
+  - the tab title flashes.
+- **Mute** silences that probe's alarm. The tile turns yellow and reads "Muted until back in range".
+- A muted alarm re-arms only after the reading **comes back inside the range**. To count as back inside, the reading must be at least 1 °C past the limit, so jitter right at the limit doesn't count. For very narrow ranges this margin is a quarter of the range. The **next** time the reading leaves the range, the alarm sounds again.
+- Limits are drawn on the chart as dashed lines in the probe's colour.
+- Limits are stored on the server in `~/.config/grill/alarms.json`, and alarms are evaluated by the server. Every open page shows the same limits and the same mute state, whether it is on a laptop or a phone.
+- Unplugging a probe clears its alarm.
+
+> Browsers only allow sound after the page has been touched or clicked once. If the banner says "Tap anywhere to enable the alarm sound", do that once.
+> Keep the page open on the device that should make noise.
+
 **Logs** are written to `~/grill_logs/grill_YYYY-MM-DD.csv`, one file per day. The columns are `time,S1..S6`. An empty cell means the probe was not plugged in.
 After a restart, the last 24 hours are reloaded from the logs, so the chart continues where it left off.
 
@@ -77,6 +95,7 @@ Copy `grill.env.example` to `grill.env`, edit it, then restart the service with 
 | `GRILL_HOST` | `0.0.0.0` | `0.0.0.0` makes the page visible on the local network. `127.0.0.1` restricts it to this computer |
 | `GRILL_MAC` | (empty) | Connect to one specific thermometer. If empty, the service connects to the first device whose name starts with `Grill` |
 | `GRILL_LOG_DIR` | `~/grill_logs` | Directory for the CSV logs |
+| `GRILL_CONFIG_DIR` | `~/.config/grill` | Directory for alarm limits (`alarms.json`) |
 
 You can also pass the same settings on the command line: `python3 grill_web.py --port 8080 --host 127.0.0.1 --mac AA:BB:.. --logs ~/dir`.
 
@@ -168,10 +187,15 @@ thermometer --BLE notify FFB2--> BlueZ (bluetoothd) --D-Bus--> grill_web.py
                                                                 └─ HTTP thread :8080
                                                                      ├─ GET /             → grill_web.html
                                                                      ├─ GET /api/history  → {status, history:[[ts,[t1..t6]],…]} (last 24 h)
-                                                                     └─ GET /api/stream   → SSE: {type:"reading",t,v} | {type:"status",code,state,…}
+                                                                     ├─ GET /api/stream   → SSE: {type:"reading",t,v} | {type:"status",…} | {type:"alarms",…}
+                                                                     ├─ POST /api/limits  ← {probe:1..6, min:number|null, max:number|null}
+                                                                     └─ POST /api/mute    ← {probe:1..6} or {all:true}
 ```
 
-Status `code` values are `searching`, `connecting`, `connected`, `lost` and `error`.
+- Status `code` values are `searching`, `connecting`, `connected`, `lost` and `error`.
+- Each probe's alarm has the form `{min, max, state: "ok"|"high"|"low", muted}`.
+- `/api/history` also returns the current `alarms`.
+- Anyone who can open the page can change limits. Set `GRILL_HOST=127.0.0.1` if your network is not trusted.
 
 ## Disclaimer
 

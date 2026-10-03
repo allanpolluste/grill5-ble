@@ -32,6 +32,8 @@ ap.add_argument('--host', default=os.environ.get('GRILL_HOST', '0.0.0.0'),
 ap.add_argument('--mac', default=os.environ.get('GRILL_MAC') or None,
                 help='thermometer MAC (default: first device named "Grill*")')
 ap.add_argument('--logs', default=os.environ.get('GRILL_LOG_DIR', '~/grill_logs'))
+ap.add_argument('--config', default=os.environ.get('GRILL_CONFIG_DIR', '~/.config/grill'),
+                help='where alarm limits are stored (alarms.json)')
 args = ap.parse_args()
 
 KEEP_SECONDS = 24 * 3600    # history kept in memory / shown on the chart
@@ -113,6 +115,85 @@ def set_state(code, state, device=None):
     print(f'[{time.strftime("%H:%M:%S")}] {state}', flush=True)
 
 
+# ---------- per-probe min/max alarms ----------
+# A probe alarms when it leaves [min, max]. Muting silences it until the reading has come back
+# inside the range (by at least HYSTERESIS, so jitter at the limit doesn't count) - after that
+# the next exit alarms again.
+HYSTERESIS = 1.0
+config_dir = os.path.expanduser(args.config)
+os.makedirs(config_dir, exist_ok=True)
+limits_path = os.path.join(config_dir, 'alarms.json')
+alarms = [{'min': None, 'max': None, 'state': 'ok', 'muted': False} for _ in range(PROBES)]
+
+
+def load_limits():
+    try:
+        with open(limits_path) as f:
+            saved = json.load(f)
+        for a, s in zip(alarms, saved):
+            a['min'], a['max'] = s.get('min'), s.get('max')
+    except (OSError, ValueError):
+        pass
+
+
+def save_limits():
+    tmp = limits_path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump([{'min': a['min'], 'max': a['max']} for a in alarms], f, indent=1)
+    os.replace(tmp, limits_path)
+
+
+def outside(a, v):
+    if a['max'] is not None and v > a['max']:
+        return 'high'
+    if a['min'] is not None and v < a['min']:
+        return 'low'
+    return None
+
+
+def back_inside(a, v):
+    lo, hi = a['min'], a['max']
+    margin = HYSTERESIS
+    if lo is not None and hi is not None:
+        margin = min(margin, (hi - lo) / 4)
+    return (lo is None or v >= lo + margin) and (hi is None or v <= hi - margin)
+
+
+def evaluate(i, v):
+    """Update alarm i for reading v. Returns True if anything changed. Caller holds lock."""
+    a = alarms[i]
+    before = (a['state'], a['muted'])
+    if v is None or (a['min'] is None and a['max'] is None):
+        a['state'], a['muted'] = 'ok', False
+    else:
+        out = outside(a, v)
+        if a['state'] == 'ok':
+            if out:
+                a['state'], a['muted'] = out, False
+        elif out and out != a['state']:          # jumped straight across to the other side
+            a['state'], a['muted'] = out, False
+        elif not out and back_inside(a, v):      # back in range -> re-arm
+            a['state'], a['muted'] = 'ok', False
+    if (a['state'], a['muted']) != before:
+        print(f'[{time.strftime("%H:%M:%S")}] probe {i + 1}: '
+              f'{"ALARM " + a["state"] if a["state"] != "ok" else "back in range"} ({v})', flush=True)
+        return True
+    return False
+
+
+def alarms_msg():
+    return {'type': 'alarms', 'alarms': [dict(a) for a in alarms]}
+
+
+def latest(i):
+    for _, temps in reversed(history):
+        return temps[i]
+    return None
+
+
+load_limits()
+
+
 def add_reading(temps):
     ts = time.time()
     with lock:
@@ -123,8 +204,11 @@ def add_reading(temps):
             cut += 1
         if cut:
             del history[:cut]
+        changed = [evaluate(i, t) for i, t in enumerate(temps)]
     write_log(ts, temps)
     broadcast({'type': 'reading', 't': ts, 'v': temps})
+    if any(changed):
+        broadcast(alarms_msg())
 
 
 # ---------- Bluetooth (BlueZ over D-Bus, GLib main loop) ----------
@@ -267,7 +351,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, 'text/html; charset=utf-8', f.read())
         elif self.path == '/api/history':
             with lock:
-                body = json.dumps({'status': status, 'history': history})
+                body = json.dumps({'status': status, 'history': history,
+                                   'alarms': alarms_msg()['alarms']})
             self.send(200, 'application/json', body.encode())
         elif self.path == '/api/stream':
             q = queue.Queue(maxsize=1000)
@@ -292,6 +377,47 @@ class Handler(BaseHTTPRequestHandler):
                     clients.remove(q)
         else:
             self.send(404, 'text/plain', b'404')
+
+    def do_POST(self):
+        try:
+            n = int(self.headers.get('Content-Length', 0))
+            req = json.loads(self.rfile.read(min(n, 4096)) or b'{}')
+        except ValueError:
+            return self.send(400, 'text/plain', b'bad json')
+        if self.path == '/api/limits':
+            # {"probe": 1..6, "min": number|null, "max": number|null}
+            try:
+                i = int(req['probe']) - 1
+                lo = None if req.get('min') in (None, '') else float(req['min'])
+                hi = None if req.get('max') in (None, '') else float(req['max'])
+            except (KeyError, TypeError, ValueError):
+                return self.send(400, 'text/plain', b'expected probe, min, max')
+            if not 0 <= i < PROBES:
+                return self.send(400, 'text/plain', b'probe must be 1..6')
+            if any(x is not None and not -50 <= x <= 500 for x in (lo, hi)):
+                return self.send(400, 'text/plain', b'limits must be between -50 and 500')
+            if lo is not None and hi is not None and lo >= hi:
+                return self.send(400, 'text/plain', b'min must be below max')
+            with lock:
+                a = alarms[i]
+                a['min'], a['max'] = lo, hi
+                a['state'], a['muted'] = 'ok', False     # new limits: start fresh
+                evaluate(i, latest(i))
+                save_limits()
+                msg = alarms_msg()
+            print(f'[{time.strftime("%H:%M:%S")}] probe {i + 1}: limits {lo}..{hi}', flush=True)
+        elif self.path == '/api/mute':
+            # {"probe": 1..6} or {"all": true}
+            with lock:
+                targets = range(PROBES) if req.get('all') else [int(req.get('probe', 0)) - 1]
+                for i in targets:
+                    if 0 <= i < PROBES and alarms[i]['state'] != 'ok':
+                        alarms[i]['muted'] = True
+                msg = alarms_msg()
+        else:
+            return self.send(404, 'text/plain', b'404')
+        broadcast(msg)
+        self.send(200, 'application/json', json.dumps(msg).encode())
 
 
 def main():
