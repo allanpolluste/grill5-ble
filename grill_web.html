@@ -33,6 +33,10 @@ h1 { font-size: 20px; margin: 0; font-weight: 650; }
 .status.wait .dot { background: var(--warn); }
 .status.bad .dot { background: var(--crit); }
 .updated { color: var(--muted); font-size: 13px; margin-left: auto; }
+.soundbtn { font: inherit; font-size: 13px; color: var(--ink); background: transparent; cursor: pointer;
+  border: 1px solid var(--ring); border-radius: 8px; padding: 4px 10px; }
+.soundbtn.off { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, var(--surface)); font-weight: 600; }
+.soundbtn.on { color: var(--ink-2); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .tile { background: var(--surface); border: 1px solid var(--ring); border-radius: 10px; padding: 12px 14px; }
@@ -120,6 +124,7 @@ th { color: var(--ink-2); font-weight: 600; }
     <h1>Grill thermometer</h1>
     <span class="status wait" id="status"><span class="dot"></span><span id="statusText">connecting…</span></span>
     <span class="updated" id="updated"></span>
+    <button class="soundbtn off" id="soundBtn" type="button">🔇 Enable alarm sound</button>
   </header>
 
   <div class="banner" id="banner" role="alert" hidden></div>
@@ -270,15 +275,34 @@ function saveLimits(i, min, max, errEl, done) {
 }
 
 // ---- alarm banner, sound, title ----
+// Browsers only allow audio after a user gesture, unless the site is allowed to autoplay.
+// Try at load (works when autoplay is allowed), otherwise unlock on the first tap/click/key.
 let audio = null;
+try {
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  audio.onstatechange = renderSound;
+  if (audio.state === 'suspended') audio.resume().catch(() => {});
+} catch (e) { /* no Web Audio */ }
+
 function unlockAudio() {
-  try {
-    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-    if (audio.state === 'suspended') audio.resume().then(renderBanner);
-  } catch (e) { /* no audio support */ }
+  if (audio && audio.state === 'suspended') audio.resume().then(renderSound, () => {});
 }
 addEventListener('pointerdown', unlockAudio);
 addEventListener('keydown', unlockAudio);
+
+const soundOn = () => !!audio && audio.state === 'running';
+function renderSound() {
+  const b = $('soundBtn');
+  if (!audio) { b.hidden = true; return; }
+  b.className = 'soundbtn ' + (soundOn() ? 'on' : 'off');
+  b.textContent = soundOn() ? '🔔 Alarm sound on' : '🔇 Enable alarm sound';
+  b.title = soundOn() ? 'Click to play a test beep' : 'Browsers need one click before a page may play sound';
+  renderBanner();
+}
+$('soundBtn').onclick = () => {
+  if (!audio) return;
+  audio.resume().then(() => { renderSound(); beep(); });   // test beep confirms it works
+};
 
 function beep() {
   if (!audio || audio.state !== 'running') return;
@@ -304,10 +328,10 @@ function renderBanner() {
     (last[o.i] != null ? ` (${last[o.i].toFixed(1)} °C)` : '');
   b.hidden = false;
   b.classList.toggle('muted', !ring.length);
-  const needSound = ring.length && (!audio || audio.state !== 'running');
+  const needSound = ring.length && audio && !soundOn();
   b.innerHTML = ring.length
     ? `<span class="msg">⚠ ${ring.map(desc).join(', ')}</span>` +
-      (needSound ? `<span class="sound">Tap anywhere to enable the alarm sound</span>` : '') +
+      (needSound ? `<span class="sound">Sound is blocked by the browser – tap anywhere to enable it</span>` : '') +
       `<button class="btn" type="button" id="muteAll">${ring.length > 1 ? 'Mute all' : 'Mute'}</button>`
     : `<span class="msg">${all.length} muted alarm${all.length > 1 ? 's' : ''}</span>` +
       `<span class="sound">They sound again after the probe returns to its range and leaves it again.</span>`;
@@ -477,6 +501,7 @@ $('range').addEventListener('click', e => {
 addEventListener('resize', renderChart);
 
 buildTiles();
+renderSound();
 let pending = false;
 fetch('/api/history').then(r => r.json()).then(j => {
   data = j.history.map(([t, v]) => ({ t, v }));
